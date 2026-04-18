@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # 🌐 NetFlow | Visual Subnet & VLAN Engine
 
 NetFlow is a high-performance, enterprise-grade networking tool designed for Network Architects and Systems Administrators. It simplifies complex Variable Length Subnet Masking (VLSM) calculations and automates Cisco IOS configuration scripts with a focus on precision and modern UI/UX.
