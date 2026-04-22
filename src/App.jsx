@@ -1,12 +1,18 @@
 import { useState, useMemo, useEffect } from 'react'
 
 // --- THE MATH ENGINE ---
+// Converts an IP string to a 32-bit integer for fast mathematical operations
 const ipToInt = (ip) => {
   try { return ip.split('.').reduce((int, octet) => (int << 8) + parseInt(octet, 10), 0) >>> 0; } catch { return 0; }
 };
+
+// Converts a 32-bit integer back to a standard IPv4 string
 const intToIp = (int) => [(int >>> 24) & 255, (int >>> 16) & 255, (int >>> 8) & 255, int & 255].join('.');
+
+// Generates a subnet mask string from a CIDR prefix
 const cidrToMask = (cidr) => intToIp((0xFFFFFFFF << (32 - cidr)) >>> 0);
 
+// Ensures the provided IP is a true network address by applying the bitwise mask
 const getTrueNetworkAddress = (ipStr, cidrVal) => {
   try {
     let ipInt = ipToInt(ipStr);
@@ -16,13 +22,14 @@ const getTrueNetworkAddress = (ipStr, cidrVal) => {
 };
 
 function App() {
+  // State Initialization with LocalStorage persistence
   const [ipVersion, setIpVersion] = useState(() => localStorage.getItem('na_version') || 'v4'); 
   const [majorNetwork, setMajorNetwork] = useState(() => localStorage.getItem('na_network') || '192.168.1.0');
   const [cidr, setCidr] = useState(() => parseInt(localStorage.getItem('na_cidr')) || 24);
   const [departments, setDepartments] = useState(() => JSON.parse(localStorage.getItem('na_depts')) || []); 
   
   const [isAdvancedMode, setIsAdvancedMode] = useState(() => localStorage.getItem('na_adv') === 'true');
-  const [ciscoDeviceType, setCiscoDeviceType] = useState('l3switch');
+  const [ciscoDeviceType, setCiscoDeviceType] = useState('router_isr'); // Default to modern ISR router
 
   const [newDeptName, setNewDeptName] = useState(''); 
   const [newDeptHosts, setNewDeptHosts] = useState(''); 
@@ -31,6 +38,7 @@ function App() {
   const [copiedText, setCopiedText] = useState(null);
   const [showCorrectionToast, setShowCorrectionToast] = useState(false);
 
+  // Sync state to LocalStorage
   useEffect(() => {
     localStorage.setItem('na_version', ipVersion);
     localStorage.setItem('na_network', majorNetwork);
@@ -39,6 +47,7 @@ function App() {
     localStorage.setItem('na_adv', isAdvancedMode);
   }, [ipVersion, majorNetwork, cidr, departments, isAdvancedMode]);
 
+  // Handlers
   const handleVersionChange = (version) => {
     setIpVersion(version); setIsCalculated(false); 
     if (version === 'v6') { setMajorNetwork('2001:db8::'); setCidr(64); } 
@@ -91,32 +100,49 @@ function App() {
     setCopiedText(text); setTimeout(() => setCopiedText(null), 2000); 
   };
 
+  // Core VLSM Calculation Engine
   const calculationResults = useMemo(() => {
     if (!isCalculated || departments.length === 0) return null;
     if (ipVersion === 'v4') {
+      // Sort departments by highest host requirement first (prevents IP fragmentation)
       let sortedDepts = [...departments].sort((a, b) => b.hosts - a.hosts);
       let currentIpInt = ipToInt(majorNetwork);
       let totalNetworkCapacity = Math.pow(2, 32 - cidr);
       let usedCapacity = 0; let results = [];
 
       for (let dept of sortedDepts) {
+        // Find next power of 2 for block size (+2 accounts for Network and Broadcast IPs)
         let blockSize = Math.pow(2, Math.ceil(Math.log2(dept.hosts + 2)));
         let allocatedCidr = 32 - Math.log2(blockSize);
 
         if (usedCapacity + blockSize > totalNetworkCapacity) {
+          // Capacity Exceeded Guard
           results.push({ name: dept.name, vlan: dept.vlan, cidr: allocatedCidr, networkAddress: "⚠️ OUT OF BOUNDS", usableRange: "Insufficient Capacity", broadcastAddress: "-", isOverflow: true });
           usedCapacity += blockSize; 
         } else {
-          results.push({ name: dept.name, vlan: dept.vlan, cidr: allocatedCidr, subnetMask: cidrToMask(allocatedCidr), gatewayAddress: intToIp(currentIpInt + 1), networkAddress: intToIp(currentIpInt), usableRange: `${intToIp(currentIpInt + 1)} - ${intToIp(currentIpInt + blockSize - 2)}`, broadcastAddress: intToIp(currentIpInt + blockSize - 1), isOverflow: false });
+          // Standard Allocation
+          results.push({ 
+            name: dept.name, 
+            vlan: dept.vlan, 
+            cidr: allocatedCidr, 
+            subnetMask: cidrToMask(allocatedCidr), 
+            gatewayAddress: intToIp(currentIpInt + 1), 
+            networkAddress: intToIp(currentIpInt), 
+            usableRange: `${intToIp(currentIpInt + 1)} - ${intToIp(currentIpInt + blockSize - 2)}`, 
+            broadcastAddress: intToIp(currentIpInt + blockSize - 1), 
+            isOverflow: false 
+          });
           currentIpInt += blockSize; usedCapacity += blockSize;
         }
       }
       return { results, usedCapacity, totalNetworkCapacity };
     } else {
+      // Placeholder logic for IPv6 implementation
       return { results: departments.map(d => ({ name: d.name, vlan: d.vlan, cidr: 64, networkAddress: `2001:db8:abcd:${Math.floor(Math.random()*1000)}::`, usableRange: "SLAAC", broadcastAddress: "Anycast", isOverflow: false })), usedCapacity: "N/A", totalNetworkCapacity: "Infinite" };
     }
   }, [isCalculated, departments, majorNetwork, cidr, ipVersion]);
 
+  // Export Functions
   const downloadJSON = () => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(calculationResults, null, 2));
     const a = document.createElement('a'); a.href = dataStr; a.download = `network_config.json`; a.click();
@@ -124,22 +150,67 @@ function App() {
 
   const downloadPDF = () => window.print();
 
+  // ADVANCED INDUSTRY-LEVEL CISCO GENERATOR
   const downloadCiscoConfig = () => {
     if (!calculationResults || calculationResults.results.length === 0) return;
-    let configText = `! --- CISCO ${ciscoDeviceType === 'l3switch' ? 'L3 SWITCH (SVI)' : 'ROUTER (ROAS)'} CONFIGURATION ---\n!\n`;
-    if (ciscoDeviceType === 'router') configText += `interface GigabitEthernet0/0\n description Main_Trunk_Link\n no shutdown\n!\n`;
+    
+    let configText = `! *********************************************************\n`;
+    configText += `! NETFLOW AUTOMATED CONFIGURATION REPORT\n`;
+    configText += `! Target Device: ${ciscoDeviceType.toUpperCase()}\n`;
+    configText += `! *********************************************************\n!\n`;
 
-    calculationResults.results.forEach(res => {
-      if (res.isOverflow || !res.vlan) return; 
-      if (ciscoDeviceType === 'l3switch') {
-        configText += `vlan ${res.vlan}\n name ${res.name.replace(/\s+/g, '_')}\n!\n`;
-        configText += `interface Vlan${res.vlan}\n description ${res.name.replace(/\s+/g, '_')}_Gateway\n ip address ${res.gatewayAddress} ${res.subnetMask}\n no shutdown\n!\n`;
-      } else {
-        configText += `interface GigabitEthernet0/0.${res.vlan}\n description ${res.name.replace(/\s+/g, '_')}_Gateway\n encapsulation dot1Q ${res.vlan}\n ip address ${res.gatewayAddress} ${res.subnetMask}\n!\n`;
-      }
-    });
+    // Determine Base Interface dynamically
+    let baseInt = 'GigabitEthernet0/0'; 
+    if (ciscoDeviceType === 'router_isr') baseInt = 'GigabitEthernet0/0/0';
+    if (ciscoDeviceType === 'router_legacy') baseInt = 'FastEthernet0/0';
+
+    // SECTION 1: ROUTER CONFIGURATION
+    if (ciscoDeviceType.startsWith('router')) {
+      configText += `! --- STEP 1: PHYSICAL INTERFACE ACTIVATION ---\n`;
+      configText += `interface ${baseInt}\n`;
+      configText += ` description TRUNK_LINK_TO_SWITCH\n`;
+      configText += ` no shutdown\n`;
+      configText += `exit\n!\n`;
+
+      configText += `! --- STEP 2: VLAN SUB-INTERFACES ---\n`;
+      calculationResults.results.forEach(res => {
+        if (res.isOverflow || !res.vlan) return; 
+        configText += `interface ${baseInt}.${res.vlan}\n`;
+        configText += ` description GW_${res.name.replace(/\s+/g, '_')}\n`;
+        configText += ` encapsulation dot1Q ${res.vlan}\n`;
+        configText += ` ip address ${res.gatewayAddress} ${res.subnetMask}\n`;
+        configText += `exit\n!\n`;
+      });
+    }
+
+    // SECTION 2: LAYER 3 SWITCH CONFIGURATION
+    if (ciscoDeviceType === 'l3switch') {
+      configText += `! --- STEP 1: GLOBAL ROUTING ---\n`;
+      configText += `ip routing\n!\n`;
+      
+      calculationResults.results.forEach(res => {
+        if (res.isOverflow || !res.vlan) return; 
+        configText += `vlan ${res.vlan}\n`;
+        configText += ` name ${res.name.replace(/\s+/g, '_')}\n`;
+        configText += `exit\n!\n`;
+        configText += `interface Vlan${res.vlan}\n`;
+        configText += ` description GW_${res.name.replace(/\s+/g, '_')}\n`;
+        configText += ` ip address ${res.gatewayAddress} ${res.subnetMask}\n`;
+        configText += ` no shutdown\n`;
+        configText += `exit\n!\n`;
+      });
+    }
+
+    // SECTION 3: VERIFICATION COMMANDS
+    configText += `! --- STEP 3: VERIFICATION ---\n`;
+    configText += `do show ip interface brief\n`;
+    configText += `do show ip route\n`;
+
     const dataStr = "data:text/plain;charset=utf-8," + encodeURIComponent(configText);
-    const a = document.createElement('a'); a.href = dataStr; a.download = `cisco_config.txt`; a.click();
+    const a = document.createElement('a'); 
+    a.href = dataStr; 
+    a.download = `NetFlow_${ciscoDeviceType}_Config.txt`; 
+    a.click();
   };
 
   return (
@@ -151,6 +222,7 @@ function App() {
         <span className="font-semibold text-xs sm:text-sm text-center">Auto-corrected invalid Host IP to true Network ID</span>
       </div>
 
+      {/* Header Section */}
       <div className="max-w-7xl mx-auto mb-8 sm:mb-10 flex flex-col md:flex-row justify-between items-center gap-6 print:hidden">
         <div className="flex items-center space-x-4 group cursor-pointer w-full md:w-auto justify-center md:justify-start">
           <div className="p-3 bg-slate-800 rounded-xl border border-slate-700/50 shadow-lg transition-transform duration-500 group-hover:rotate-12">
@@ -172,10 +244,10 @@ function App() {
 
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6 sm:gap-8 print:block">
         
-        {/* LEFT COLUMN */}
+        {/* LEFT COLUMN: Input Parameters */}
         <div className="lg:col-span-1 space-y-6 sm:space-y-8 print:hidden">
           
-          {/* Card 1: Major Network */}
+          {/* Card 1: Major Network Config */}
           <div className="bg-slate-900/40 backdrop-blur-xl p-5 sm:p-6 rounded-3xl border border-slate-700/50 shadow-2xl group relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500/50 to-transparent"></div>
             <h2 className="text-base sm:text-lg font-bold mb-4 sm:mb-5 text-emerald-400 flex items-center">
@@ -184,12 +256,11 @@ function App() {
             <div className="flex items-center space-x-2 sm:space-x-3 mb-2">
               <input type="text" value={majorNetwork} onChange={(e) => {setMajorNetwork(e.target.value); setIsCalculated(false)}} className="w-full bg-slate-950/80 border border-slate-700 rounded-2xl px-4 py-3 sm:px-5 sm:py-4 text-white font-mono text-base sm:text-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/50 hover:border-slate-500 transition-all shadow-inner" />
               <span className="text-3xl sm:text-4xl text-slate-600 font-light">/</span>
-              {/* RESPONSIVE CIDR WIDTH */}
               <input type="number" value={cidr} onChange={(e) => {setCidr(e.target.value); setIsCalculated(false)}} className="w-20 sm:w-28 bg-slate-950/80 border border-slate-700 rounded-2xl px-2 py-3 sm:px-5 sm:py-4 text-white font-mono text-center text-base sm:text-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/50 hover:border-slate-500 transition-all shadow-inner flex-shrink-0" />
             </div>
           </div>
 
-          {/* Card 2: Requirements */}
+          {/* Card 2: Department Requirements */}
           <div className="bg-slate-900/40 backdrop-blur-xl p-5 sm:p-6 rounded-3xl border border-slate-700/50 shadow-2xl flex flex-col h-[500px] sm:h-[480px] relative overflow-hidden transition-all duration-500">
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500/50 to-transparent"></div>
             
@@ -208,11 +279,18 @@ function App() {
               </div>
             </div>
 
-            {/* RESPONSIVE INPUT ROW FIX: Stacks on mobile, row on desktop */}
-            <div className="flex flex-col md:flex-row gap-2 mb-2">
-              <input type="text" value={newDeptName} onChange={(e) => setNewDeptName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddDepartment()} placeholder="Dept Name" className="w-full md:flex-[2] bg-slate-950/80 border border-slate-700 hover:border-slate-500 rounded-2xl px-4 py-3 sm:py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all shadow-inner" />
+            {/* Input Row (FIXED LAYOUT) */}
+            <div className="flex flex-col md:flex-row gap-2 mb-3">
+              <input 
+                type="text" 
+                value={newDeptName} 
+                onChange={(e) => setNewDeptName(e.target.value)} 
+                onKeyDown={(e) => e.key === 'Enter' && handleAddDepartment()} 
+                placeholder="Dept Name" 
+                className="w-full md:w-2/5 bg-slate-950/80 border border-slate-700 hover:border-slate-500 rounded-2xl px-4 py-3 sm:py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all shadow-inner" 
+              />
               
-              <div className="flex gap-2 w-full md:flex-[3]">
+              <div className="flex gap-2 w-full md:w-3/5">
                 <input 
                   type={ipVersion === 'v6' ? 'text' : 'number'} 
                   value={ipVersion === 'v6' ? '' : newDeptHosts} 
@@ -224,11 +302,21 @@ function App() {
                 />
                 
                 {isAdvancedMode && (
-                  <input type="number" value={newDeptVlan} onChange={(e) => setNewDeptVlan(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddDepartment()} placeholder="VLAN" className="flex-1 w-20 md:w-auto bg-slate-950/80 border border-emerald-900/50 rounded-2xl px-2 py-3 sm:py-3.5 text-emerald-300 font-mono text-center focus:outline-none focus:ring-2 focus:ring-emerald-500/50 animate-fade-in-up shadow-inner" />
+                  <input 
+                    type="number" 
+                    value={newDeptVlan} 
+                    onChange={(e) => setNewDeptVlan(e.target.value)} 
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddDepartment()} 
+                    placeholder="VLAN" 
+                    className="flex-1 w-full bg-slate-950/80 border border-emerald-900/50 rounded-2xl px-2 py-3 sm:py-3.5 text-emerald-300 font-mono text-center focus:outline-none focus:ring-2 focus:ring-emerald-500/50 animate-fade-in-up shadow-inner" 
+                  />
                 )}
                 
-                {/* FIXED WIDTH BUTTON SO IT NEVER GETS SQUISHED */}
-                <button onClick={handleAddDepartment} title="Press Enter to Add" className="w-14 sm:w-16 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-2xl flex justify-center items-center active:scale-90 transition-all shadow-lg hover:shadow-emerald-500/30 relative group flex-shrink-0">
+                <button 
+                  onClick={handleAddDepartment} 
+                  title="Press Enter to Add" 
+                  className="w-14 sm:w-16 flex-shrink-0 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-2xl flex justify-center items-center active:scale-90 transition-all shadow-lg hover:shadow-emerald-500/30"
+                >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
                 </button>
               </div>
@@ -241,6 +329,7 @@ function App() {
               )}
             </div>
 
+            {/* Added Departments List */}
             <div className="flex-grow space-y-2.5 overflow-y-auto pr-2 custom-scrollbar">
                {departments.length === 0 && (
                  <div className="flex flex-col items-center justify-center h-full text-slate-500/50 border-2 border-dashed border-slate-700/50 rounded-2xl">
@@ -282,7 +371,7 @@ function App() {
           </div>
         </div>
 
-        {/* RIGHT COLUMN */}
+        {/* RIGHT COLUMN: Output & Results */}
         <div className="lg:col-span-2 bg-slate-900/40 backdrop-blur-xl p-5 sm:p-8 rounded-3xl border border-slate-700/50 shadow-2xl flex flex-col min-h-[400px] sm:min-h-[500px] print:bg-white print:border-none print:shadow-none print:p-0 print:block">
            {!isCalculated ? (
              <div className="flex-1 flex flex-col items-center justify-center opacity-40 print:hidden w-full h-full py-10">
@@ -315,10 +404,15 @@ function App() {
                    <div className="flex flex-wrap gap-2 sm:gap-3 print:hidden w-full sm:w-auto">
                      {isAdvancedMode && ipVersion === 'v4' && (
                        <div className="flex bg-slate-800 p-1 rounded-xl border border-emerald-500/30 shadow-lg shadow-emerald-500/10 w-full sm:w-auto">
+                          
+                          {/* Updated Router Model Selector */}
                           <select value={ciscoDeviceType} onChange={(e) => setCiscoDeviceType(e.target.value)} className="bg-transparent text-emerald-300 text-[10px] sm:text-xs font-bold px-2 py-2 outline-none cursor-pointer flex-1">
                             <option value="l3switch">L3 Switch (SVI)</option>
-                            <option value="router">Router (Sub-Int)</option>
+                            <option value="router_isr">Router ISR (Gig0/0/0)</option>
+                            <option value="router">Router Std (Gig0/0)</option>
+                            <option value="router_legacy">Router Legacy (Fa0/0)</option>
                           </select>
+                          
                           <button onClick={downloadCiscoConfig} className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] sm:text-xs px-3 sm:px-4 py-2 rounded-lg transition-all active:scale-95 font-bold flex items-center whitespace-nowrap">
                             <svg className="w-3.5 h-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg> CISCO IOS
                           </button>
@@ -326,7 +420,7 @@ function App() {
                      )}
                      <div className="flex gap-2 w-full sm:w-auto">
                        <button onClick={downloadJSON} className="flex-1 sm:flex-none justify-center bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-4 py-2.5 sm:py-3 rounded-xl border border-slate-600 flex items-center transition-all active:scale-95 font-bold">
-                          JSON
+                         JSON
                        </button>
                        <button onClick={downloadPDF} className="flex-1 sm:flex-none justify-center bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 py-2.5 sm:py-3 rounded-xl border border-emerald-500 flex items-center transition-all active:scale-95 font-bold shadow-lg shadow-emerald-500/20">
                          EXPORT PDF
@@ -335,6 +429,7 @@ function App() {
                    </div>
                 </div>
                 
+                {/* Capacity Visualizer */}
                 {ipVersion === 'v4' && (
                   <div className="mb-6 sm:mb-8 p-4 sm:p-6 bg-slate-950/80 rounded-2xl border border-slate-800 print:border-gray-300 print:bg-white print:p-0 print:mb-6 shadow-inner">
                     <div className="flex justify-between text-xs sm:text-sm text-slate-400 font-mono mb-2 sm:mb-3 print:text-black">
@@ -350,7 +445,7 @@ function App() {
                   </div>
                 )}
 
-                {/* RESPONSIVE TABLE: overflow-auto allows horizontal scrolling on mobile */}
+                {/* Subnet Results Table */}
                 <div className="overflow-auto max-h-[400px] sm:max-h-[550px] border border-slate-700/50 rounded-2xl shadow-xl print:border-black print:rounded-none print:shadow-none print:max-h-none custom-scrollbar bg-slate-900/20">
                   <table className="w-full text-left text-xs sm:text-sm text-slate-300 print:text-black relative whitespace-nowrap">
                     <thead className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur-sm text-slate-400 uppercase font-bold text-[10px] sm:text-xs tracking-widest border-b border-slate-700/50 print:static print:bg-gray-100 print:text-black print:border-black">

@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # 🌐 NetFlow | Visual Subnet & VLAN Engine
 
 NetFlow is a high-performance, enterprise-grade networking tool designed for Network Architects and Systems Administrators. It simplifies complex Variable Length Subnet Masking (VLSM) calculations and automates Cisco IOS configuration scripts with a focus on precision and modern UI/UX.
@@ -32,7 +31,4 @@ NetFlow operates on a 5-step logical pipeline:
 
 ---
 Developed with ❤️ by [Pasindu]
-=======
-# NetFlow-VLSM-Architect
-A professional, modern VLSM Subnet Calculator and Cisco IOS Configuration Generator built with React and Tailwind CSS.
->>>>>>> ead07cb944b9a2b1c32b8c53c99876aa048b4edf
+
